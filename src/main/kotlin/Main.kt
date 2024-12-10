@@ -2,70 +2,108 @@ package org.wurdum
 
 import io.javalin.Javalin
 import io.javalin.http.pathParamAsClass
+import org.koin.core.component.KoinComponent
+import org.koin.core.component.inject
+import org.koin.core.context.startKoin
+import org.koin.dsl.module
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
+val appModule = module {
+    single { TodoRepository() }
+}
+
 fun main() {
-    val app = Javalin.create()
-    val serial = AtomicInteger()
-    val todos = ConcurrentHashMap<Int, Todo>()
+    startKoin { modules(appModule) }
 
-    app.get("/todos") { ctx ->
-        ctx.json(
-            todos
-                .asSequence()
-                .sortedBy { it.value.id }
-                .map { it.value }
-                .toList()
-        )
-    }
+    Application()
+        .setup()
+        .start(7070)
+}
 
-    app.post("/todos") { ctx ->
-        val todo = ctx.bodyValidator(AddTodoRequest::class.java)
-            .check({ it.text.isNotBlank() }, "Text cannot be blank")
-            .get()
+class Application : KoinComponent {
+    private val repository: TodoRepository by inject()
 
-        val id = serial.incrementAndGet()
-        todos[id] = Todo(id, todo.text, false)
+    fun setup(): Javalin {
+        val app = Javalin.create()
 
-        ctx.status(201)
-    }
-
-    app.put("/todos/{id}") { ctx ->
-        val id = ctx.pathParamAsClass<Int>("id")
-            .check({ it > 0 }, "ID must be greater than 0")
-            .get()
-
-        val todo = todos[id]
-        if (todo == null) {
-            ctx.status(404)
-            return@put
+        app.get("/todos") { ctx ->
+            ctx.json(repository.list())
         }
 
-        val updatedTodo = ctx.bodyValidator(UpdateTodoRequest::class.java)
-            .check({ it.text.isNotBlank() }, "Text cannot be blank")
-            .get()
+        app.post("/todos") { ctx ->
+            val todo = ctx.bodyValidator(AddTodoRequest::class.java)
+                .check({ it.text.isNotBlank() }, "Text cannot be blank")
+                .get()
 
-        todos[id] = todo.copy(text = updatedTodo.text)
-    }
+            repository.add(todo.text)
 
-    app.post("/todos/{id}:toggle") { ctx ->
-        val id = ctx.pathParamAsClass<Int>("id")
-            .check({ it > 0 }, "ID must be greater than 0")
-            .get()
-
-        val todo = todos[id]
-        if (todo == null) {
-            ctx.status(404)
-            return@post
+            ctx.status(201)
         }
 
-        todos[id] = todo.copy(done = !todo.done)
-    }
+        app.put("/todos/{id}") { ctx ->
+            val id = ctx.pathParamAsClass<Int>("id")
+                .check({ it > 0 }, "ID must be greater than 0")
+                .get()
 
-    app.start(7070)
+            val updatedTodo = ctx.bodyValidator(UpdateTodoRequest::class.java)
+                .check({ it.text.isNotBlank() }, "Text cannot be blank")
+                .get()
+
+            val updated = repository.update(id, updatedTodo.text)
+            if (!updated) {
+                ctx.status(404)
+            }
+        }
+
+        app.post("/todos/{id}:toggle") { ctx ->
+            val id = ctx.pathParamAsClass<Int>("id")
+                .check({ it > 0 }, "ID must be greater than 0")
+                .get()
+
+            val toggled = repository.toggle(id)
+            if (!toggled) {
+                ctx.status(404)
+            }
+        }
+
+        return app
+    }
 }
 
 data class AddTodoRequest(val text: String)
 data class UpdateTodoRequest(val text: String)
 data class Todo(val id: Int, val text: String, val done: Boolean)
+
+class TodoRepository {
+
+    companion object {
+        private val serial = AtomicInteger()
+        private val todos = ConcurrentHashMap<Int, Todo>()
+    }
+
+    fun list(): List<Todo> {
+        return todos
+            .asSequence()
+            .sortedBy { it.value.id }
+            .map { it.value }
+            .toList()
+    }
+
+    fun add(text: String) {
+        val id = serial.incrementAndGet()
+        todos[id] = Todo(id, text, false)
+    }
+
+    fun update(id: Int, text: String): Boolean {
+        val existingTodo = todos[id] ?: return false
+        todos[id] = existingTodo.copy(text = text)
+        return true
+    }
+
+    fun toggle(id: Int): Boolean {
+        val existingTodo = todos[id] ?: return false
+        todos[id] = existingTodo.copy(done = !existingTodo.done)
+        return true
+    }
+}
